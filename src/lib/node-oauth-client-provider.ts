@@ -103,6 +103,22 @@ export class NodeOAuthClientProvider implements OAuthClientProvider {
   }
 
   /**
+   * Extracts scopes from OAuth registration response
+   * @param clientInfo The client registration response
+   * @returns The extracted scopes as a space-separated string
+   */
+  private extractScopesFromRegistration(clientInfo: any): string {
+    // Try different scope field formats
+    if (clientInfo.scope) return clientInfo.scope
+    if (clientInfo.default_scope) return clientInfo.default_scope
+    if (Array.isArray(clientInfo.scopes)) return clientInfo.scopes.join(' ')
+    if (Array.isArray(clientInfo.default_scopes)) return clientInfo.default_scopes.join(' ')
+
+    // Fallback
+    return 'openid email profile'
+  }
+
+  /**
    * Saves client information
    * @param clientInformation The client information to save
    */
@@ -110,15 +126,7 @@ export class NodeOAuthClientProvider implements OAuthClientProvider {
     if (DEBUG) debugLog('Saving client info', { client_id: clientInformation.client_id })
 
     // Extract scopes from registration response
-    const clientInfoWithScope = clientInformation as any
-    const scopes =
-      clientInfoWithScope.scope ||
-      clientInfoWithScope.default_scope ||
-      (clientInfoWithScope.scopes && Array.isArray(clientInfoWithScope.scopes) ? clientInfoWithScope.scopes.join(' ') : undefined) ||
-      (clientInfoWithScope.default_scopes && Array.isArray(clientInfoWithScope.default_scopes)
-        ? clientInfoWithScope.default_scopes.join(' ')
-        : undefined) ||
-      'openid email profile' // fallback
+    const scopes = this.extractScopesFromRegistration(clientInformation as any)
 
     if (DEBUG) debugLog('Extracted scopes from registration response', { scopes })
     this._scopes = scopes

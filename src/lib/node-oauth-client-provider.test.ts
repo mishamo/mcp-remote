@@ -55,6 +55,37 @@ describe('NodeOAuthClientProvider Scope Handling', () => {
     })
   })
 
+  describe('scope extraction helper method', () => {
+    it('should extract scope from various registration response formats', () => {
+      // Test the private method through type assertion
+      const extractMethod = (provider as any).extractScopesFromRegistration.bind(provider)
+
+      // Test scope field
+      expect(extractMethod({ scope: 'custom scope' })).toBe('custom scope')
+
+      // Test default_scope field
+      expect(extractMethod({ default_scope: 'default scope' })).toBe('default scope')
+
+      // Test scopes array
+      expect(extractMethod({ scopes: ['read', 'write', 'admin'] })).toBe('read write admin')
+
+      // Test default_scopes array
+      expect(extractMethod({ default_scopes: ['openid', 'profile'] })).toBe('openid profile')
+
+      // Test fallback when no scope fields present
+      expect(extractMethod({})).toBe('openid email profile')
+
+      // Test priority order - scope takes precedence
+      expect(
+        extractMethod({
+          scope: 'priority scope',
+          default_scope: 'secondary scope',
+          scopes: ['array', 'scope'],
+        }),
+      ).toBe('priority scope')
+    })
+  })
+
   describe('scope extraction from registration response', () => {
     it('should extract scope from registration response', async () => {
       const registrationResponse = {
