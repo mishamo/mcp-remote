@@ -1,0 +1,200 @@
+import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest'
+import { NodeOAuthClientProvider } from './node-oauth-client-provider'
+import type { OAuthProviderOptions } from './types'
+import * as mcpAuthConfig from './mcp-auth-config'
+import * as utils from './utils'
+
+// Mock the modules
+vi.mock('./mcp-auth-config')
+vi.mock('./utils')
+vi.mock('open')
+vi.mock('strict-url-sanitise')
+
+const mockWriteJsonFile = vi.mocked(mcpAuthConfig.writeJsonFile)
+const mockReadJsonFile = vi.mocked(mcpAuthConfig.readJsonFile)
+const mockDeleteConfigFile = vi.mocked(mcpAuthConfig.deleteConfigFile)
+const mockGetServerUrlHash = vi.mocked(utils.getServerUrlHash)
+
+describe('NodeOAuthClientProvider Scope Handling', () => {
+  let provider: NodeOAuthClientProvider
+  const options: OAuthProviderOptions = {
+    serverUrl: 'https://example.com',
+    callbackPort: 3000,
+    host: 'localhost',
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    // Mock getServerUrlHash to return a consistent value
+    mockGetServerUrlHash.mockReturnValue('test-server-hash')
+    provider = new NodeOAuthClientProvider(options)
+  })
+
+  afterEach(() => {
+    vi.resetAllMocks()
+  })
+
+  describe('clientMetadata', () => {
+    it('should include default scope in client metadata', () => {
+      const metadata = provider.clientMetadata
+      expect(metadata.scope).toBe('openid email profile')
+    })
+
+    it('should include scope in client metadata with static OAuth metadata', () => {
+      const providerWithStaticMetadata = new NodeOAuthClientProvider({
+        ...options,
+        staticOAuthClientMetadata: {
+          redirect_uris: ['http://localhost:3000/oauth/callback'],
+          client_name: 'Custom Client',
+        },
+      })
+
+      const metadata = providerWithStaticMetadata.clientMetadata
+      expect(metadata.scope).toBe('openid email profile')
+      expect(metadata.client_name).toBe('Custom Client')
+    })
+  })
+
+  describe('scope extraction from registration response', () => {
+    it('should extract scope from registration response', async () => {
+      const registrationResponse = {
+        client_id: 'test-client-id',
+        scope: 'openid email profile custom',
+      }
+
+      await provider.saveClientInformation(registrationResponse as any)
+
+      expect(mockWriteJsonFile).toHaveBeenCalledWith('test-server-hash', 'client_info.json', registrationResponse)
+      expect(mockWriteJsonFile).toHaveBeenCalledWith('test-server-hash', 'scopes.json', { scopes: 'openid email profile custom' })
+    })
+
+    it('should extract default_scope from registration response', async () => {
+      const registrationResponse = {
+        client_id: 'test-client-id',
+        default_scope: 'openid email',
+      }
+
+      await provider.saveClientInformation(registrationResponse as any)
+
+      expect(mockWriteJsonFile).toHaveBeenCalledWith('test-server-hash', 'scopes.json', { scopes: 'openid email' })
+    })
+
+    it('should handle array scopes from registration response', async () => {
+      const registrationResponse = {
+        client_id: 'test-client-id',
+        scopes: ['openid', 'email', 'profile'],
+      }
+
+      await provider.saveClientInformation(registrationResponse as any)
+
+      expect(mockWriteJsonFile).toHaveBeenCalledWith('test-server-hash', 'scopes.json', { scopes: 'openid email profile' })
+    })
+
+    it('should handle array default_scopes from registration response', async () => {
+      const registrationResponse = {
+        client_id: 'test-client-id',
+        default_scopes: ['openid', 'email'],
+      }
+
+      await provider.saveClientInformation(registrationResponse as any)
+
+      expect(mockWriteJsonFile).toHaveBeenCalledWith('test-server-hash', 'scopes.json', { scopes: 'openid email' })
+    })
+
+    it('should use fallback scope when none provided in registration response', async () => {
+      const registrationResponse = {
+        client_id: 'test-client-id',
+      }
+
+      await provider.saveClientInformation(registrationResponse as any)
+
+      expect(mockWriteJsonFile).toHaveBeenCalledWith('test-server-hash', 'scopes.json', { scopes: 'openid email profile' })
+    })
+  })
+
+  describe('scope inclusion in authorization URL', () => {
+    it('should include scope in authorization URL when scopes are stored', async () => {
+      // Mock stored scopes
+      const provider = new NodeOAuthClientProvider(options)
+      // Simulate scopes being loaded
+      ;(provider as any)._scopes = 'openid email profile custom'
+
+      const authUrl = new URL('https://auth.example.com/oauth/authorize')
+      await provider.redirectToAuthorization(authUrl)
+
+      expect(authUrl.searchParams.get('scope')).toBe('openid email profile custom')
+    })
+
+    it('should include fallback scope when no scopes are stored', async () => {
+      const authUrl = new URL('https://auth.example.com/oauth/authorize')
+      await provider.redirectToAuthorization(authUrl)
+
+      expect(authUrl.searchParams.get('scope')).toBe('openid email profile')
+    })
+
+    it('should include resource parameter alongside scope', async () => {
+      const providerWithResource = new NodeOAuthClientProvider({
+        ...options,
+        authorizeResource: 'test-resource',
+      })
+      ;(providerWithResource as any)._scopes = 'openid email'
+
+      const authUrl = new URL('https://auth.example.com/oauth/authorize')
+      await providerWithResource.redirectToAuthorization(authUrl)
+
+      expect(authUrl.searchParams.get('scope')).toBe('openid email')
+      expect(authUrl.searchParams.get('resource')).toBe('test-resource')
+    })
+  })
+
+  describe('scope loading from storage', () => {
+    it('should load stored scopes when getting client information', async () => {
+      const clientInfo = { client_id: 'test-client-id' }
+      const scopesData = { scopes: 'openid email profile custom' }
+
+      mockReadJsonFile
+        .mockResolvedValueOnce(clientInfo) // client_info.json
+        .mockResolvedValueOnce(scopesData) // scopes.json
+
+      const result = await provider.clientInformation()
+
+      expect(result).toEqual(clientInfo)
+      expect(mockReadJsonFile).toHaveBeenCalledWith('test-server-hash', 'client_info.json', expect.any(Object))
+      expect(mockReadJsonFile).toHaveBeenCalledWith('test-server-hash', 'scopes.json', expect.any(Object))
+    })
+
+    it('should handle missing scopes file gracefully', async () => {
+      const clientInfo = { client_id: 'test-client-id' }
+
+      mockReadJsonFile
+        .mockResolvedValueOnce(clientInfo) // client_info.json
+        .mockResolvedValueOnce(undefined) // scopes.json (not found)
+
+      const result = await provider.clientInformation()
+
+      expect(result).toEqual(clientInfo)
+    })
+  })
+
+  describe('credential invalidation', () => {
+    it('should delete scopes when invalidating all credentials', async () => {
+      await provider.invalidateCredentials('all')
+
+      expect(mockDeleteConfigFile).toHaveBeenCalledWith('test-server-hash', 'scopes.json')
+    })
+
+    it('should delete scopes when invalidating client credentials', async () => {
+      await provider.invalidateCredentials('client')
+
+      expect(mockDeleteConfigFile).toHaveBeenCalledWith('test-server-hash', 'client_info.json')
+      expect(mockDeleteConfigFile).toHaveBeenCalledWith('test-server-hash', 'scopes.json')
+    })
+
+    it('should not delete scopes when invalidating only tokens', async () => {
+      await provider.invalidateCredentials('tokens')
+
+      expect(mockDeleteConfigFile).toHaveBeenCalledWith('test-server-hash', 'tokens.json')
+      expect(mockDeleteConfigFile).not.toHaveBeenCalledWith('test-server-hash', 'scopes.json')
+    })
+  })
+})
